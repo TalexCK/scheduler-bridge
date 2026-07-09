@@ -1,0 +1,8 @@
+{
+  "id": "${id}",
+  "name": "${name}",
+  "version": "${version}",
+  "description": "${description}",
+  "authors": ["Scheduler Bridge"],
+  "main": "com.schedulerbridge.velocity.SchedulerBridgeVelocityPlugin"
+}

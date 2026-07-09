@@ -1,0 +1,4 @@
+name: ${name}
+version: ${version}
+main: com.schedulerbridge.spigot.SchedulerBridgeSpigotPlugin
+description: ${description}

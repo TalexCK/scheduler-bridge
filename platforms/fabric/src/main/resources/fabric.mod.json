@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "id": "${id}",
+  "version": "${version}",
+  "name": "${name}",
+  "description": "${description}",
+  "environment": "*",
+  "entrypoints": {
+    "main": [
+      "com.schedulerbridge.fabric.SchedulerBridgeFabricMod"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.16.0",
+    "minecraft": "${fabricMinecraftVersionPredicate}"
+  }
+}
