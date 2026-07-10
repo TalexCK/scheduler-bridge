@@ -1,8 +1,8 @@
 plugins {
-    `java-library`
+  `java-library`
 }
 
 dependencies {
-    api(project(":common"))
-    compileOnly("net.fabricmc:fabric-loader:${property("fabricLoaderVersion")}")
+  api(project(":common"))
+  compileOnly("net.fabricmc:fabric-loader:${property("fabricLoaderVersion")}")
 }

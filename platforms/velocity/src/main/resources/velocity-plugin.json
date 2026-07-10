@@ -4,5 +4,11 @@
   "version": "${version}",
   "description": "${description}",
   "authors": ["Scheduler Bridge"],
+  "dependencies": [
+    {
+      "id": "viaversion",
+      "optional": false
+    }
+  ],
   "main": "com.schedulerbridge.velocity.SchedulerBridgeVelocityPlugin"
 }

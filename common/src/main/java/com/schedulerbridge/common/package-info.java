@@ -1,4 +1,2 @@
-/**
- * Platform-neutral scheduler contracts.
- */
+/** Platform-neutral scheduler contracts. */
 package com.schedulerbridge.common;

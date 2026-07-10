@@ -1,9 +1,9 @@
 package com.schedulerbridge.common;
 
 public interface SchedulerFacade {
-    TaskHandle run(Runnable task);
+  TaskHandle run(Runnable task);
 
-    TaskHandle runLater(Runnable task, long delayTicks);
+  TaskHandle runLater(Runnable task, long delayTicks);
 
-    TaskHandle runRepeating(Runnable task, long delayTicks, long periodTicks);
+  TaskHandle runRepeating(Runnable task, long delayTicks, long periodTicks);
 }

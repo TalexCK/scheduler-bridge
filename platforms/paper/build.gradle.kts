@@ -1,8 +1,8 @@
 plugins {
-    `java-library`
+  `java-library`
 }
 
 dependencies {
-    api(project(":common"))
-    compileOnly("io.papermc.paper:paper-api:${property("paperApiVersion")}")
+  api(project(":common"))
+  compileOnly("io.papermc.paper:paper-api:${property("paperApiVersion")}")
 }

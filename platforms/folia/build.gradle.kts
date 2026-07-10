@@ -1,8 +1,8 @@
 plugins {
-    `java-library`
+  `java-library`
 }
 
 dependencies {
-    api(project(":common"))
-    compileOnly("dev.folia:folia-api:${property("foliaApiVersion")}")
+  api(project(":common"))
+  compileOnly("dev.folia:folia-api:${property("foliaApiVersion")}")
 }

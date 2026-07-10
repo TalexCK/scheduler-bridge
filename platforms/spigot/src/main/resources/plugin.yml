@@ -1,4 +1,4 @@
-name: ${name}
+name: SchedulerBridge
 version: ${version}
 main: com.schedulerbridge.spigot.SchedulerBridgeSpigotPlugin
 description: ${description}

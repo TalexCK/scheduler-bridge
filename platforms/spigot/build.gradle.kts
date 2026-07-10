@@ -1,8 +1,8 @@
 plugins {
-    `java-library`
+  `java-library`
 }
 
 dependencies {
-    api(project(":common"))
-    compileOnly("org.spigotmc:spigot-api:${property("spigotApiVersion")}")
+  api(project(":common"))
+  compileOnly("org.spigotmc:spigot-api:${property("spigotApiVersion")}")
 }

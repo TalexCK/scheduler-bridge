@@ -2,15 +2,15 @@ package com.schedulerbridge.common;
 
 @FunctionalInterface
 public interface TaskHandle {
-    TaskHandle NOOP = new TaskHandle() {
+  TaskHandle NOOP =
+      new TaskHandle() {
         @Override
-        public void cancel() {
-        }
-    };
+        public void cancel() {}
+      };
 
-    void cancel();
+  void cancel();
 
-    static TaskHandle noop() {
-        return NOOP;
-    }
+  static TaskHandle noop() {
+    return NOOP;
+  }
 }
