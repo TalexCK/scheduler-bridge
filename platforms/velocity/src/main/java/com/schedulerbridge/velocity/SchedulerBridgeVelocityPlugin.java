@@ -4,16 +4,19 @@ import com.google.inject.Inject;
 import com.schedulerbridge.common.BridgeHttpClient;
 import com.schedulerbridge.common.GameBridgeReporter;
 import com.schedulerbridge.common.SchedulerBridge;
+import com.schedulerbridge.common.SchedulerGameDefinition;
 import com.schedulerbridge.common.ServerInstance;
 import com.schedulerbridge.common.ServerInstanceState;
 import com.velocitypowered.api.command.CommandManager;
 import com.velocitypowered.api.command.CommandMeta;
 import com.velocitypowered.api.command.CommandSource;
 import com.velocitypowered.api.command.SimpleCommand;
+import com.velocitypowered.api.event.PostOrder;
 import com.velocitypowered.api.event.Subscribe;
 import com.velocitypowered.api.event.connection.DisconnectEvent;
 import com.velocitypowered.api.event.connection.PostLoginEvent;
 import com.velocitypowered.api.event.player.ServerConnectedEvent;
+import com.velocitypowered.api.event.player.ServerPreConnectEvent;
 import com.velocitypowered.api.event.proxy.ProxyInitializeEvent;
 import com.velocitypowered.api.event.proxy.ProxyShutdownEvent;
 import com.velocitypowered.api.plugin.Dependency;
@@ -30,6 +33,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -70,10 +74,15 @@ public final class SchedulerBridgeVelocityPlugin {
   private final Map<String, BridgeHttpClient.TransferRequest> deferredTransfers =
       new ConcurrentHashMap<>();
   private final Map<String, Long> deferredTransferExpiresAt = new ConcurrentHashMap<>();
+  private final Set<String> reconciledTransfers = ConcurrentHashMap.newKeySet();
+  private final Set<UUID> redirectingPlayers = ConcurrentHashMap.newKeySet();
   private final AtomicBoolean transferPollRunning = new AtomicBoolean();
+  private final Object reconciliationLock = new Object();
   private final String schedulerServerId = System.getenv("SCHEDULER_SERVER_ID");
   private final long transferTimeoutMillis = resolveTransferTimeoutMillis();
   private final ViaVersionProtocolGate viaVersionGate;
+  private final SoloAccessRegistry soloAccessRegistry =
+      new SoloAccessRegistry(schedulerServerId, "Lobby");
   private volatile List<ServerInstance> schedulerInstances = Collections.emptyList();
   private volatile List<String> schedulerDefinitions = Collections.emptyList();
 
@@ -120,7 +129,7 @@ public final class SchedulerBridgeVelocityPlugin {
       serverSyncTask =
           proxyServer
               .getScheduler()
-              .buildTask(this, this::syncServers)
+              .buildTask(this, this::reconcileServers)
               .delay(Duration.ofSeconds(1))
               .repeat(Duration.ofSeconds(2))
               .schedule();
@@ -170,6 +179,8 @@ public final class SchedulerBridgeVelocityPlugin {
     }
     deferredTransfers.clear();
     deferredTransferExpiresAt.clear();
+    reconciledTransfers.clear();
+    redirectingPlayers.clear();
   }
 
   @Subscribe
@@ -180,6 +191,7 @@ public final class SchedulerBridgeVelocityPlugin {
   @Subscribe
   public void onServerConnected(ServerConnectedEvent event) {
     schedulePlayerSync();
+    enforceConnectedAccess(event);
   }
 
   @Subscribe
@@ -190,10 +202,92 @@ public final class SchedulerBridgeVelocityPlugin {
       if ((transfer.player().equalsIgnoreCase(uuid) || transfer.player().equalsIgnoreCase(username))
           && deferredTransfers.remove(transfer.transferId(), transfer)) {
         deferredTransferExpiresAt.remove(transfer.transferId());
+        reconciledTransfers.remove(transfer.transferId());
         report(transfer.transferId(), false, "player is not connected to Velocity");
       }
     }
     schedulePlayerSync();
+  }
+
+  @Subscribe(order = PostOrder.LAST)
+  public void onServerPreConnect(ServerPreConnectEvent event) {
+    String originalServer = event.getOriginalServer().getServerInfo().getName();
+    String resultServer =
+        event
+            .getResult()
+            .getServer()
+            .map(server -> server.getServerInfo().getName())
+            .orElse(null);
+    RegisteredServer target = event.getResult().getServer().orElse(event.getOriginalServer());
+    if (!SoloPreConnectGate.shouldDeny(
+        soloAccessRegistry,
+        event.getResult().isAllowed(),
+        resultServer == null ? originalServer : resultServer,
+        addressOf(target),
+        event.getPlayer().getUniqueId())) {
+      return;
+    }
+    String serverId = resultServer == null ? originalServer : resultServer;
+    event.setResult(ServerPreConnectEvent.ServerResult.denied());
+    event
+        .getPlayer()
+        .sendMessage(
+            Component.text("Access denied: ", NamedTextColor.RED)
+                .append(Component.text(serverId, NamedTextColor.YELLOW))
+                .append(
+                    Component.text(
+                        " is not available for this player.", NamedTextColor.RED)));
+  }
+
+  private void enforceConnectedAccess(ServerConnectedEvent event) {
+    Player player = event.getPlayer();
+    RegisteredServer server = event.getServer();
+    String serverId = server.getServerInfo().getName();
+    if (!SoloConnectedGate.shouldRedirect(
+        soloAccessRegistry, serverId, addressOf(server), player.getUniqueId())) {
+      redirectingPlayers.remove(player.getUniqueId());
+      return;
+    }
+    if (!redirectingPlayers.add(player.getUniqueId())) {
+      return;
+    }
+    player.sendMessage(
+        Component.text("Access revoked: ", NamedTextColor.RED)
+            .append(Component.text(serverId, NamedTextColor.YELLOW))
+            .append(Component.text(" is not authorized for this player.", NamedTextColor.RED)));
+    Optional<RegisteredServer> fallback = findAccessFallback(serverId);
+    if (fallback.isEmpty()) {
+      redirectingPlayers.remove(player.getUniqueId());
+      player.disconnect(
+          Component.text("No safe fallback server is available.", NamedTextColor.RED));
+      return;
+    }
+    player
+        .createConnectionRequest(fallback.get())
+        .connect()
+        .whenComplete(
+            (result, error) -> {
+              redirectingPlayers.remove(player.getUniqueId());
+              if (error != null
+                  || (!result.isSuccessful()
+                      && result.getStatus()
+                          != ConnectionRequestBuilder.Status.ALREADY_CONNECTED)) {
+                String message = error == null ? result.getStatus().name() : error.getMessage();
+                logger.warn("Failed to return unauthorized solo player: {}", message);
+                player.disconnect(
+                    Component.text("Unable to reach a safe fallback server.", NamedTextColor.RED));
+              }
+            });
+  }
+
+  private Optional<RegisteredServer> findAccessFallback(String currentServerId) {
+    for (String serverId : SoloConnectedGate.fallbackIds(schedulerServerId, currentServerId)) {
+      Optional<RegisteredServer> fallback = proxyServer.getServer(serverId);
+      if (fallback.isPresent()) {
+        return fallback;
+      }
+    }
+    return Optional.empty();
   }
 
   private void pollTransfers() {
@@ -217,29 +311,96 @@ public final class SchedulerBridgeVelocityPlugin {
   private void dispatchTransfers() {
     for (BridgeHttpClient.TransferRequest transfer : deferredTransfers.values()) {
       try {
-        Long expiresAt = deferredTransferExpiresAt.get(transfer.transferId());
-        if (expiresAt != null && System.currentTimeMillis() >= expiresAt) {
-          if (deferredTransfers.remove(transfer.transferId(), transfer)) {
-            deferredTransferExpiresAt.remove(transfer.transferId());
-            report(transfer.transferId(), false, "transfer expired before dispatch");
-          }
-          continue;
-        }
-        RegisteredServer server = registerManagedServer(transfer.serverId(), transfer.address());
-        if (!viaVersionGate.ready(transfer.serverId())) {
-          continue;
-        }
-        if (deferredTransfers.remove(transfer.transferId(), transfer)) {
-          deferredTransferExpiresAt.remove(transfer.transferId());
-          transfer(transfer, server);
+        synchronized (reconciliationLock) {
+          dispatchTransferLocked(transfer);
         }
       } catch (Exception error) {
-        if (deferredTransfers.remove(transfer.transferId(), transfer)) {
-          deferredTransferExpiresAt.remove(transfer.transferId());
+        if (removeDeferredTransfer(transfer)) {
           report(transfer.transferId(), false, error.getMessage());
         }
       }
     }
+  }
+
+  private void dispatchTransferLocked(BridgeHttpClient.TransferRequest transfer) {
+    Long expiresAt = deferredTransferExpiresAt.get(transfer.transferId());
+    if (expiresAt != null && System.currentTimeMillis() >= expiresAt) {
+      if (removeDeferredTransfer(transfer)) {
+        report(transfer.transferId(), false, "transfer expired before dispatch");
+      }
+      return;
+    }
+    Optional<Player> player = findPlayer(transfer.player());
+    if (player.isEmpty()) {
+      if (removeDeferredTransfer(transfer)) {
+        report(transfer.transferId(), false, "player is not connected to Velocity");
+      }
+      return;
+    }
+    SoloAccessRegistry.Evaluation access =
+        soloAccessRegistry.transferEvaluation(
+            transfer.serverId(), player.get().getUniqueId(), transfer.address());
+    if (access.decision() != SoloAccessRegistry.Decision.NORMAL
+        && reconciledTransfers.add(transfer.transferId())) {
+      if (!reconcileServers()) {
+        return;
+      }
+      access =
+          soloAccessRegistry.transferEvaluation(
+              transfer.serverId(), player.get().getUniqueId(), transfer.address());
+    }
+    if (access.decision() == SoloAccessRegistry.Decision.UNKNOWN
+        || (access.decision() == SoloAccessRegistry.Decision.DENIED && access.retryable())) {
+      return;
+    }
+    if (access.decision() == SoloAccessRegistry.Decision.DENIED) {
+      if (removeDeferredTransfer(transfer)) {
+        report(transfer.transferId(), false, transferFailure(access.reason()));
+      }
+      return;
+    }
+    Optional<RegisteredServer> registered = proxyServer.getServer(transfer.serverId());
+    if (registered.isEmpty()) {
+      if (reconciledTransfers.add(transfer.transferId())) {
+        reconcileServers();
+      }
+      return;
+    }
+    RegisteredServer server = registered.get();
+    if (!addressOf(server).equalsIgnoreCase(transfer.address())) {
+      if (removeDeferredTransfer(transfer)) {
+        report(
+            transfer.transferId(),
+            false,
+            "transfer target does not match current scheduler instance");
+      }
+      return;
+    }
+    if (!viaVersionGate.ready(transfer.serverId())) {
+      return;
+    }
+    if (removeDeferredTransfer(transfer)) {
+      transfer(transfer, server);
+    }
+  }
+
+  private boolean removeDeferredTransfer(BridgeHttpClient.TransferRequest transfer) {
+    if (!deferredTransfers.remove(transfer.transferId(), transfer)) {
+      return false;
+    }
+    deferredTransferExpiresAt.remove(transfer.transferId());
+    reconciledTransfers.remove(transfer.transferId());
+    return true;
+  }
+
+  private static String transferFailure(SoloAccessRegistry.DenialReason reason) {
+    return switch (reason) {
+      case UNAUTHORIZED -> "player is not on the frozen solo access list";
+      case STALE_INSTANCE -> "transfer target does not match current scheduler instance";
+      case INACTIVE_SOLO -> "solo server does not have an active access list";
+      case UNKNOWN -> "transfer target is not present in the scheduler catalog";
+      case NONE -> "transfer was denied";
+    };
   }
 
   private void schedulePlayerSync() {
@@ -272,42 +433,84 @@ public final class SchedulerBridgeVelocityPlugin {
     }
   }
 
-  private void syncServers() {
+  private boolean reconcileServers() {
     if (client == null) {
-      return;
+      return false;
     }
-    try {
-      Set<String> readyServers = ConcurrentHashMap.newKeySet();
-      List<ServerInstance> instances = client.servers();
-      schedulerInstances = Collections.unmodifiableList(new ArrayList<>(instances));
-      for (ServerInstance instance : instances) {
-        if (instance.state() != ServerInstanceState.READY
-            || instance.serverId().equalsIgnoreCase(schedulerServerId)) {
-          continue;
-        }
-        registerManagedServer(instance.serverId(), "127.0.0.1:" + instance.port());
-        readyServers.add(instance.serverId());
-      }
-      for (String serverId : new ArrayList<>(managedServers)) {
-        if (readyServers.contains(serverId)) {
-          continue;
-        }
-        proxyServer
-            .getServer(serverId)
-            .ifPresent(server -> proxyServer.unregisterServer(server.getServerInfo()));
-        viaVersionGate.serverUnregistered(serverId);
-      }
-      managedServers.clear();
-      managedServers.addAll(readyServers);
+    synchronized (reconciliationLock) {
+      soloAccessRegistry.beginReconciliation();
+      SoloAccessRegistry.Snapshot candidate = null;
       try {
-        schedulerDefinitions =
-            Collections.unmodifiableList(new ArrayList<>(client.serverDefinitions()));
+        List<String> definitions = client.serverDefinitions();
+        List<SchedulerGameDefinition> games = client.games();
+        List<BridgeHttpClient.SoloAccessRecord> access = client.soloAccess();
+        List<ServerInstance> instances = client.servers();
+        candidate = soloAccessRegistry.prepare(definitions, games, access, instances);
+        reconcileManagedServers(candidate, instances);
+        soloAccessRegistry.publish(candidate);
+        schedulerDefinitions = Collections.unmodifiableList(new ArrayList<>(definitions));
+        schedulerInstances = Collections.unmodifiableList(new ArrayList<>(instances));
+        return true;
       } catch (Exception error) {
-        logger.warn(error.getMessage());
+        isolateKnownSoloServers(candidate);
+        logger.warn("Scheduler reconciliation failed: {}", rootMessage(error));
+        return false;
       }
-    } catch (Exception error) {
-      logger.warn(error.getMessage());
     }
+  }
+
+  private void reconcileManagedServers(
+      SoloAccessRegistry.Snapshot candidate, List<ServerInstance> instances) {
+    Map<String, String> desiredServers = new HashMap<>();
+    for (ServerInstance instance : instances) {
+      if (instance.serverId().equalsIgnoreCase(schedulerServerId)
+          || !candidate.canRegister(instance)) {
+        continue;
+      }
+      registerManagedServer(instance.serverId(), "127.0.0.1:" + instance.port());
+      desiredServers.put(normalizeServerId(instance.serverId()), instance.serverId());
+    }
+    for (String serverId : new ArrayList<>(managedServers)) {
+      if (!desiredServers.containsKey(normalizeServerId(serverId))) {
+        unregisterManagedServer(serverId);
+      }
+    }
+    managedServers.clear();
+    managedServers.addAll(desiredServers.values());
+  }
+
+  private void isolateKnownSoloServers(SoloAccessRegistry.Snapshot candidate) {
+    for (String serverId : new ArrayList<>(managedServers)) {
+      if (soloAccessRegistry.isKnownSolo(serverId)
+          || (candidate != null && candidate.isKnownSolo(serverId))) {
+        unregisterManagedServer(serverId);
+      }
+    }
+  }
+
+  private void unregisterManagedServer(String serverId) {
+    proxyServer
+        .getServer(serverId)
+        .ifPresent(server -> proxyServer.unregisterServer(server.getServerInfo()));
+    viaVersionGate.serverUnregistered(serverId);
+    for (String managed : new ArrayList<>(managedServers)) {
+      if (managed.equalsIgnoreCase(serverId)) {
+        managedServers.remove(managed);
+      }
+    }
+  }
+
+  private static String rootMessage(Throwable error) {
+    Throwable current = error;
+    while (current.getCause() != null) {
+      current = current.getCause();
+    }
+    String message = current.getMessage();
+    return message == null || message.isBlank() ? current.getClass().getSimpleName() : message;
+  }
+
+  private static String normalizeServerId(String value) {
+    return value.toLowerCase(Locale.ROOT);
   }
 
   private void transfer(BridgeHttpClient.TransferRequest transfer, RegisteredServer server) {
@@ -365,6 +568,11 @@ public final class SchedulerBridgeVelocityPlugin {
       proxyServer.unregisterServer(existing.get().getServerInfo());
     }
     return proxyServer.registerServer(new ServerInfo(serverId, socket));
+  }
+
+  private static String addressOf(RegisteredServer server) {
+    InetSocketAddress address = server.getServerInfo().getAddress();
+    return address.getHostString() + ":" + address.getPort();
   }
 
   private Optional<Player> findPlayer(String value) {
@@ -492,7 +700,6 @@ public final class SchedulerBridgeVelocityPlugin {
               invocation.source(),
               () -> {
                 List<ServerInstance> instances = client.servers();
-                schedulerInstances = Collections.unmodifiableList(new ArrayList<>(instances));
                 invocation
                     .source()
                     .sendMessage(

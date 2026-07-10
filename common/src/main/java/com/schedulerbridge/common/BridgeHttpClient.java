@@ -11,9 +11,17 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Collection;
 import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
+import java.util.UUID;
 
 public final class BridgeHttpClient {
   private final String baseUrl;
@@ -74,6 +82,21 @@ public final class BridgeHttpClient {
         post(
             "/bridge/v1/servers/" + encodePath(serverId) + "/launch",
             form("players", String.join(",", players))));
+  }
+
+  public ServerInstance launchSolo(String gameId, UUID ownerUuid, Collection<UUID> players)
+      throws IOException {
+    List<String> playerIds = soloPlayerIds(ownerUuid, players);
+    return parseServer(
+        post(
+            "/bridge/v1/solo/" + encodePath(gameId) + "/launch",
+            form("owner", ownerUuid.toString(), "players", String.join(",", playerIds))));
+  }
+
+  public void destroySolo(String gameId, UUID playerUuid) throws IOException {
+    post(
+        "/bridge/v1/solo/" + encodePath(gameId) + "/destroy",
+        form("player", playerUuid.toString()));
   }
 
   public void queueTransfers(String serverId, List<String> players) throws IOException {
@@ -137,6 +160,10 @@ public final class BridgeHttpClient {
       }
     }
     return games;
+  }
+
+  public List<SoloAccessRecord> soloAccess() throws IOException {
+    return parseSoloAccess(request("GET", "/bridge/v1/solo/access", null));
   }
 
   public List<PlayerSnapshot> players() throws IOException {
@@ -275,9 +302,9 @@ public final class BridgeHttpClient {
     }
   }
 
-  private static SchedulerGameDefinition parseGame(String value) throws IOException {
+  static SchedulerGameDefinition parseGame(String value) throws IOException {
     String[] fields = value.split("\\t", -1);
-    if (fields.length != 12) {
+    if (fields.length != 12 && fields.length != 17) {
       throw new IOException("scheduler returned an invalid game record");
     }
     try {
@@ -285,6 +312,22 @@ public final class BridgeHttpClient {
       List<String> lines = new ArrayList<>();
       if (!description.isEmpty()) {
         Collections.addAll(lines, description.split("\u001f", -1));
+      }
+      int maxPlayers = Integer.parseInt(fields[11]);
+      if (fields.length == 12) {
+        return new SchedulerGameDefinition(
+            Integer.parseInt(fields[0]),
+            decodeGameField(fields[1]),
+            decodeGameField(fields[2]),
+            decodeGameField(fields[3]),
+            lines,
+            decodeGameField(fields[5]),
+            Integer.parseInt(fields[6]),
+            nullableGameField(fields[7]),
+            nullableGameField(fields[8]),
+            nullableGameField(fields[9]),
+            Integer.parseInt(fields[10]),
+            maxPlayers);
       }
       return new SchedulerGameDefinition(
           Integer.parseInt(fields[0]),
@@ -298,7 +341,12 @@ public final class BridgeHttpClient {
           nullableGameField(fields[8]),
           nullableGameField(fields[9]),
           Integer.parseInt(fields[10]),
-          Integer.parseInt(fields[11]));
+          maxPlayers,
+          parseBoolean(fields[12]),
+          decodeGameField(fields[13]),
+          decodeGameField(fields[14]),
+          Integer.parseInt(fields[15]),
+          Integer.parseInt(fields[16]));
     } catch (IllegalArgumentException error) {
       throw new IOException("scheduler returned an invalid game record", error);
     }
@@ -311,6 +359,103 @@ public final class BridgeHttpClient {
 
   private static String decodeGameField(String value) {
     return new String(Base64.getDecoder().decode(value), StandardCharsets.UTF_8);
+  }
+
+  private static boolean parseBoolean(String value) {
+    if ("true".equalsIgnoreCase(value)) {
+      return true;
+    }
+    if ("false".equalsIgnoreCase(value)) {
+      return false;
+    }
+    throw new IllegalArgumentException("game boolean field must be true or false");
+  }
+
+  static List<SoloAccessRecord> parseSoloAccess(String value) throws IOException {
+    if (value.trim().isEmpty()) {
+      return Collections.emptyList();
+    }
+    Map<String, MutableSoloAccessRecord> access = new LinkedHashMap<>();
+    for (String line : value.split("\\R")) {
+      String[] fields = line.split("\\t", -1);
+      if (fields.length != 2 && fields.length != 3 && fields.length != 4) {
+        throw new IOException("scheduler returned an invalid solo access record");
+      }
+      String serverId;
+      UUID instanceId = null;
+      SoloAccessPolicy policy = SoloAccessPolicy.ROSTER;
+      try {
+        serverId = decodeGameField(fields[0]);
+        if (fields.length >= 3) {
+          instanceId = UUID.fromString(fields[1]);
+        }
+        if (fields.length == 4) {
+          policy = parseSoloAccessPolicy(fields[2]);
+        }
+      } catch (IllegalArgumentException error) {
+        throw new IOException("scheduler returned an invalid solo access record", error);
+      }
+      if (serverId.trim().isEmpty()) {
+        throw new IOException("scheduler returned an invalid solo access record");
+      }
+      String normalizedServerId = serverId.toLowerCase(Locale.ROOT);
+      MutableSoloAccessRecord record = access.get(normalizedServerId);
+      if (record == null) {
+        record = new MutableSoloAccessRecord(serverId, instanceId, policy);
+        access.put(normalizedServerId, record);
+      } else if (!Objects.equals(record.instanceId, instanceId) || record.policy != policy) {
+        throw new IOException("scheduler returned conflicting solo access records");
+      }
+      String playersField = fields[fields.length - 1];
+      if (playersField.trim().isEmpty()) {
+        continue;
+      }
+      for (String player : playersField.split(",")) {
+        try {
+          record.players.add(UUID.fromString(player.trim()));
+        } catch (IllegalArgumentException error) {
+          throw new IOException("scheduler returned an invalid solo access record", error);
+        }
+      }
+    }
+    List<SoloAccessRecord> result = new ArrayList<>();
+    for (MutableSoloAccessRecord record : access.values()) {
+      result.add(
+          new SoloAccessRecord(
+              record.serverId, record.instanceId, record.policy, record.players));
+    }
+    return Collections.unmodifiableList(result);
+  }
+
+  private static SoloAccessPolicy parseSoloAccessPolicy(String value) {
+    if ("open".equals(value)) {
+      return SoloAccessPolicy.OPEN;
+    }
+    if ("roster".equals(value)) {
+      return SoloAccessPolicy.ROSTER;
+    }
+    throw new IllegalArgumentException("solo access policy must be open or roster");
+  }
+
+  private static List<String> soloPlayerIds(UUID ownerUuid, Collection<UUID> players) {
+    if (ownerUuid == null) {
+      throw new IllegalArgumentException("solo owner must be set");
+    }
+    if (players == null || players.isEmpty()) {
+      throw new IllegalArgumentException("solo player list must not be empty");
+    }
+    Set<UUID> uniquePlayers = new LinkedHashSet<>(players);
+    if (uniquePlayers.contains(null)) {
+      throw new IllegalArgumentException("solo player list must not contain null");
+    }
+    if (!uniquePlayers.contains(ownerUuid)) {
+      throw new IllegalArgumentException("solo player list must contain the owner");
+    }
+    List<String> result = new ArrayList<>();
+    for (UUID player : uniquePlayers) {
+      result.add(player.toString());
+    }
+    return result;
   }
 
   private static String stripTrailingSlash(String value) {
@@ -351,6 +496,65 @@ public final class BridgeHttpClient {
 
     public String address() {
       return address;
+    }
+  }
+
+  public enum SoloAccessPolicy {
+    OPEN,
+    ROSTER
+  }
+
+  public static final class SoloAccessRecord {
+    private final String serverId;
+    private final UUID instanceId;
+    private final SoloAccessPolicy policy;
+    private final Set<UUID> players;
+
+    public SoloAccessRecord(String serverId, UUID instanceId, Collection<UUID> players) {
+      this(serverId, instanceId, SoloAccessPolicy.ROSTER, players);
+    }
+
+    public SoloAccessRecord(
+        String serverId,
+        UUID instanceId,
+        SoloAccessPolicy policy,
+        Collection<UUID> players) {
+      this.serverId = Objects.requireNonNull(serverId, "serverId");
+      this.instanceId = instanceId;
+      this.policy = Objects.requireNonNull(policy, "policy");
+      this.players =
+          Collections.unmodifiableSet(
+              new LinkedHashSet<>(Objects.requireNonNull(players, "players")));
+    }
+
+    public String serverId() {
+      return serverId;
+    }
+
+    public Optional<UUID> instanceId() {
+      return Optional.ofNullable(instanceId);
+    }
+
+    public SoloAccessPolicy policy() {
+      return policy;
+    }
+
+    public Set<UUID> players() {
+      return players;
+    }
+  }
+
+  private static final class MutableSoloAccessRecord {
+    private final String serverId;
+    private final UUID instanceId;
+    private final SoloAccessPolicy policy;
+    private final Set<UUID> players = new LinkedHashSet<>();
+
+    private MutableSoloAccessRecord(
+        String serverId, UUID instanceId, SoloAccessPolicy policy) {
+      this.serverId = serverId;
+      this.instanceId = instanceId;
+      this.policy = policy;
     }
   }
 

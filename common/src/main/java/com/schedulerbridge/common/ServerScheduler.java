@@ -9,6 +9,11 @@ import java.util.concurrent.CompletableFuture;
 public interface ServerScheduler {
   CompletableFuture<ServerInstance> launch(String serverId, Collection<UUID> players);
 
+  CompletableFuture<ServerInstance> launchSolo(
+      String gameId, UUID ownerUuid, Collection<UUID> players);
+
+  CompletableFuture<Void> destroySolo(String gameId, UUID playerUuid);
+
   CompletableFuture<Void> queueTransfers(String serverId, Collection<UUID> players);
 
   CompletableFuture<ServerInstance> stop(String serverId);

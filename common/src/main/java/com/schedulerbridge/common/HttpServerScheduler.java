@@ -34,6 +34,21 @@ public final class HttpServerScheduler implements ServerScheduler, AutoCloseable
   }
 
   @Override
+  public CompletableFuture<ServerInstance> launchSolo(
+      String gameId, UUID ownerUuid, Collection<UUID> players) {
+    return supply(() -> client.launchSolo(gameId, ownerUuid, players));
+  }
+
+  @Override
+  public CompletableFuture<Void> destroySolo(String gameId, UUID playerUuid) {
+    return supply(
+        () -> {
+          client.destroySolo(gameId, playerUuid);
+          return null;
+        });
+  }
+
+  @Override
   public CompletableFuture<Void> queueTransfers(String serverId, Collection<UUID> players) {
     return supply(
         () -> {
