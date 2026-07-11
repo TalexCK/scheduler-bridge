@@ -57,7 +57,8 @@ POST 请求采用 `application/x-www-form-urlencoded`。服务器列表和传送
 
 Solo 启动请求使用 `owner=<uuid>&players=<uuid,...>`，请求列表必须包含所有者。`shared`
 每次只用该列表执行本次传送，实例本身不冻结名单；`player_world` 才在创建时冻结名单。
-销毁请求使用 `player=<uuid>`。`/bridge/v1/solo/access` 每行依次为 Base64 服务器 ID、
+销毁请求使用 `player=<uuid>`，客户端使用独立的 90 秒读取超时，以覆盖运行中实例的安全
+停服和持久化。`/bridge/v1/solo/access` 每行依次为 Base64 服务器 ID、
 实例 UUID、`open|roster` 策略和逗号分隔的玩家 UUID。`open` 允许任意玩家进入当前实例，
 `roster` 只允许名单内玩家。旧三列记录按 `roster` 处理；旧两列记录因缺少实例 UUID，
 只会形成拒绝访问的历史标记，不会获得注册权限。非法策略和互相冲突的记录会导致本轮
@@ -131,7 +132,7 @@ Scheduler 定义识别，不受 Solo 门禁影响。
 所有用户都可以执行 `/ping`。命令按后端服务器和玩家名排序，以分段颜色输出全服在线
 人数、玩家名、当前后端和延迟；延迟按绿、黄、金、红四档显示。
 
-所有用户都可以执行 `/hub` 返回 `Lobby`。拥有 `scheduler.admin` 权限的玩家以及
+所有用户都可以执行 `/hub` 返回 `Lobby`。拥有 `network.admin` 权限的玩家以及
 Velocity 控制台可以使用以下命令：
 
 ```text

@@ -94,9 +94,11 @@ public final class BridgeHttpClient {
   }
 
   public void destroySolo(String gameId, UUID playerUuid) throws IOException {
-    post(
+    request(
+        "POST",
         "/bridge/v1/solo/" + encodePath(gameId) + "/destroy",
-        form("player", playerUuid.toString()));
+        form("player", playerUuid.toString()),
+        90_000);
   }
 
   public List<SoloSession> soloSessions() throws IOException {

@@ -54,7 +54,7 @@ import org.slf4j.Logger;
     dependencies = {@Dependency(id = "viaversion")},
     description = "Scheduler bridge for Velocity and dynamically managed Minecraft servers.")
 public final class SchedulerBridgeVelocityPlugin {
-  private static final String NETWORK_PERMISSION = "scheduler.admin";
+  private static final String NETWORK_PERMISSION = "network.admin";
   private static final List<String> NETWORK_SUBCOMMANDS =
       Arrays.asList(
           "help", "list", "players", "start", "stop", "restart", "log", "command", "transfer");
