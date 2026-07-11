@@ -99,6 +99,22 @@ public final class BridgeHttpClient {
         form("player", playerUuid.toString()));
   }
 
+  public List<SoloSession> soloSessions() throws IOException {
+    return parseSoloSessions(request("GET", "/bridge/v1/solo/session-index", null));
+  }
+
+  public ServerInstance startSoloSession(String sessionId, Collection<UUID> players)
+      throws IOException {
+    if (sessionId == null || sessionId.trim().isEmpty()) {
+      throw new IllegalArgumentException("solo session ID must be set");
+    }
+    List<String> playerIds = requestedSoloPlayerIds(players);
+    return parseServer(
+        post(
+            "/bridge/v1/solo/sessions/" + encodePath(sessionId) + "/start",
+            form("players", String.join(",", playerIds))));
+  }
+
   public void queueTransfers(String serverId, List<String> players) throws IOException {
     post(
         "/bridge/v1/servers/" + encodePath(serverId) + "/transfers",
@@ -427,6 +443,37 @@ public final class BridgeHttpClient {
     return Collections.unmodifiableList(result);
   }
 
+  static List<SoloSession> parseSoloSessions(String value) throws IOException {
+    if (value.trim().isEmpty()) {
+      return Collections.emptyList();
+    }
+    List<SoloSession> sessions = new ArrayList<>();
+    for (String line : value.split("\\R")) {
+      String[] fields = line.split("\\t", -1);
+      if (fields.length != 4) {
+        throw new IOException("scheduler returned an invalid solo session record");
+      }
+      try {
+        String gameId = decodeGameField(fields[0]);
+        String sessionId = decodeGameField(fields[1]);
+        UUID owner = UUID.fromString(fields[2]);
+        LinkedHashSet<UUID> players = new LinkedHashSet<>();
+        if (!fields[3].trim().isEmpty()) {
+          for (String player : fields[3].split(",")) {
+            players.add(UUID.fromString(player.trim()));
+          }
+        }
+        if (gameId.trim().isEmpty() || sessionId.trim().isEmpty() || !players.contains(owner)) {
+          throw new IllegalArgumentException("invalid solo session identity or roster");
+        }
+        sessions.add(new SoloSession(gameId, sessionId, owner, new ArrayList<>(players)));
+      } catch (IllegalArgumentException error) {
+        throw new IOException("scheduler returned an invalid solo session record", error);
+      }
+    }
+    return Collections.unmodifiableList(sessions);
+  }
+
   private static SoloAccessPolicy parseSoloAccessPolicy(String value) {
     if ("open".equals(value)) {
       return SoloAccessPolicy.OPEN;
@@ -450,6 +497,21 @@ public final class BridgeHttpClient {
     }
     if (!uniquePlayers.contains(ownerUuid)) {
       throw new IllegalArgumentException("solo player list must contain the owner");
+    }
+    List<String> result = new ArrayList<>();
+    for (UUID player : uniquePlayers) {
+      result.add(player.toString());
+    }
+    return result;
+  }
+
+  private static List<String> requestedSoloPlayerIds(Collection<UUID> players) {
+    if (players == null || players.isEmpty()) {
+      throw new IllegalArgumentException("solo player list must not be empty");
+    }
+    Set<UUID> uniquePlayers = new LinkedHashSet<>(players);
+    if (uniquePlayers.contains(null)) {
+      throw new IllegalArgumentException("solo player list must not contain null");
     }
     List<String> result = new ArrayList<>();
     for (UUID player : uniquePlayers) {

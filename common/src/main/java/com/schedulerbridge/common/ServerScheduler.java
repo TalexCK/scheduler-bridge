@@ -14,6 +14,11 @@ public interface ServerScheduler {
 
   CompletableFuture<Void> destroySolo(String gameId, UUID playerUuid);
 
+  CompletableFuture<List<SoloSession>> soloSessions();
+
+  CompletableFuture<ServerInstance> startSoloSession(
+      String sessionId, Collection<UUID> players);
+
   CompletableFuture<Void> queueTransfers(String serverId, Collection<UUID> players);
 
   CompletableFuture<ServerInstance> stop(String serverId);
@@ -21,6 +26,17 @@ public interface ServerScheduler {
   CompletableFuture<List<ServerInstance>> list();
 
   CompletableFuture<List<SchedulerGameDefinition>> games();
+
+  default CompletableFuture<Optional<SoloSession>> findSoloSession(
+      String gameId, UUID playerUuid) {
+    return soloSessions()
+        .thenApply(
+            sessions ->
+                sessions.stream()
+                    .filter(session -> session.gameId().equalsIgnoreCase(gameId))
+                    .filter(session -> session.players().contains(playerUuid))
+                    .findFirst());
+  }
 
   default CompletableFuture<Optional<ServerInstance>> find(String serverId) {
     return list()

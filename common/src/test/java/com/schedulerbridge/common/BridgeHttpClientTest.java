@@ -5,7 +5,11 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.sun.net.httpserver.HttpServer;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.Collections;
@@ -13,9 +17,127 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
 class BridgeHttpClientTest {
+  @Test
+  void requestsTheVersionedSoloSessionIndex() throws Exception {
+    UUID owner = UUID.fromString("00000000-0000-0000-0000-000000000001");
+    AtomicReference<String> path = new AtomicReference<>();
+    HttpServer server =
+        server(
+            exchange -> {
+              path.set(exchange.getRequestURI().getRawPath());
+              respond(
+                  exchange,
+                  encoded("puzzle")
+                      + "\t"
+                      + encoded("puzzle-owner")
+                      + "\t"
+                      + owner
+                      + "\t"
+                      + owner
+                      + "\n");
+            });
+
+    try {
+      BridgeHttpClient client = client(server);
+      assertEquals(1, client.soloSessions().size());
+      assertEquals("/bridge/v1/solo/session-index", path.get());
+    } finally {
+      server.stop(0);
+    }
+  }
+
+  @Test
+  void startsOnlyTheRequestedExistingSoloPlayers() throws Exception {
+    UUID first = UUID.fromString("00000000-0000-0000-0000-000000000001");
+    UUID second = UUID.fromString("00000000-0000-0000-0000-000000000002");
+    AtomicReference<String> method = new AtomicReference<>();
+    AtomicReference<String> path = new AtomicReference<>();
+    AtomicReference<String> body = new AtomicReference<>();
+    AtomicReference<String> authorization = new AtomicReference<>();
+    HttpServer server =
+        server(
+            exchange -> {
+              method.set(exchange.getRequestMethod());
+              path.set(exchange.getRequestURI().getRawPath());
+              body.set(readBody(exchange.getRequestBody()));
+              authorization.set(exchange.getRequestHeaders().getFirst("Authorization"));
+              respond(
+                  exchange,
+                  "puzzle-solo\t10000000-0000-0000-0000-000000000001\tStarting\t123\t50001\n");
+            });
+
+    try {
+      BridgeHttpClient client = client(server);
+      ServerInstance instance =
+          client.startSoloSession("puzzle owner", java.util.Arrays.asList(first, second, first));
+      assertEquals("puzzle-solo", instance.serverId());
+      assertEquals("POST", method.get());
+      assertEquals("/bridge/v1/solo/sessions/puzzle%20owner/start", path.get());
+      assertEquals("players=" + first + "%2C" + second, body.get());
+      assertEquals("Bearer test-token", authorization.get());
+    } finally {
+      server.stop(0);
+    }
+  }
+
+  @Test
+  void rejectsInvalidExistingSoloStartArguments() {
+    BridgeHttpClient client = new BridgeHttpClient("http://127.0.0.1:1", "test-token");
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> client.startSoloSession("", Collections.singleton(UUID.randomUUID())));
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> client.startSoloSession("session", Collections.emptyList()));
+  }
+
+  @Test
+  void parsesSoloSessions() throws Exception {
+    UUID owner = UUID.fromString("00000000-0000-0000-0000-000000000001");
+    UUID teammate = UUID.fromString("00000000-0000-0000-0000-000000000002");
+    List<SoloSession> sessions =
+        BridgeHttpClient.parseSoloSessions(
+            encoded("puzzle")
+                + "\t"
+                + encoded("puzzle-owner")
+                + "\t"
+                + owner
+                + "\t"
+                + owner
+                + ","
+                + teammate);
+
+    assertEquals(1, sessions.size());
+    assertEquals("puzzle", sessions.get(0).gameId());
+    assertEquals("puzzle-owner", sessions.get(0).sessionId());
+    assertEquals(owner, sessions.get(0).owner());
+    assertEquals(java.util.Arrays.asList(owner, teammate), sessions.get(0).players());
+    assertThrows(UnsupportedOperationException.class, () -> sessions.add(sessions.get(0)));
+    assertThrows(
+        UnsupportedOperationException.class, () -> sessions.get(0).players().add(owner));
+  }
+
+  @Test
+  void rejectsInvalidSoloSessions() {
+    UUID owner = UUID.fromString("00000000-0000-0000-0000-000000000001");
+    assertThrows(IOException.class, () -> BridgeHttpClient.parseSoloSessions("invalid"));
+    assertThrows(
+        IOException.class,
+        () ->
+            BridgeHttpClient.parseSoloSessions(
+                encoded("puzzle") + "\t" + encoded("session") + "\t" + owner + "\t"));
+    assertThrows(
+        IOException.class,
+        () ->
+            BridgeHttpClient.parseSoloSessions(
+                encoded("puzzle") + "\t" + encoded("session") + "\tinvalid\t" + owner));
+  }
+
   @Test
   void parsesAndMergesSoloAccessRecords() throws Exception {
     UUID first = UUID.fromString("00000000-0000-0000-0000-000000000001");
@@ -221,5 +343,36 @@ class BridgeHttpClientTest {
 
   private static String encoded(String value) {
     return Base64.getEncoder().encodeToString(value.getBytes(StandardCharsets.UTF_8));
+  }
+
+  private static HttpServer server(com.sun.net.httpserver.HttpHandler handler) throws IOException {
+    HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+    server.createContext("/", handler);
+    server.start();
+    return server;
+  }
+
+  private static BridgeHttpClient client(HttpServer server) {
+    return new BridgeHttpClient(
+        "http://127.0.0.1:" + server.getAddress().getPort(), "test-token");
+  }
+
+  private static void respond(com.sun.net.httpserver.HttpExchange exchange, String response)
+      throws IOException {
+    byte[] bytes = response.getBytes(StandardCharsets.UTF_8);
+    exchange.sendResponseHeaders(200, bytes.length);
+    try (java.io.OutputStream output = exchange.getResponseBody()) {
+      output.write(bytes);
+    }
+  }
+
+  private static String readBody(InputStream input) throws IOException {
+    ByteArrayOutputStream output = new ByteArrayOutputStream();
+    byte[] buffer = new byte[1024];
+    int read;
+    while ((read = input.read(buffer)) >= 0) {
+      output.write(buffer, 0, read);
+    }
+    return new String(output.toByteArray(), StandardCharsets.UTF_8);
   }
 }

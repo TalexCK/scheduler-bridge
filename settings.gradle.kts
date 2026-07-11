@@ -24,8 +24,10 @@ rootProject.name = "scheduler-bridge"
 include(
   "common",
   "platforms:fabric",
+  "platforms:fabric:v1_20_1",
   "platforms:fabric:v1_20_4",
   "platforms:fabric:v1_21_1",
+  "platforms:fabric:v1_21_10",
   "platforms:fabric:v1_21_11",
   "platforms:fabric:v26_1_2",
   "platforms:fabric:v26_2",

@@ -14,6 +14,7 @@ GRADLE_ARGS=()
 usage() {
   cat <<'USAGE'
 Usage:
+  ./build.sh --fabric --1.20.1
   ./build.sh --fabric --1.21.11
   ./build.sh --fabric --26.2
   ./build.sh --paper --clean
@@ -35,8 +36,10 @@ USAGE
 
 list_targets() {
   cat <<'TARGETS'
+fabric   1.20.1   :platforms:fabric:v1_20_1       Java 17
 fabric   1.20.4   :platforms:fabric:v1_20_4       Java 17
 fabric   1.21.1   :platforms:fabric:v1_21_1       Java 21
+fabric   1.21.10  :platforms:fabric:v1_21_10      Java 21
 fabric   1.21.11  :platforms:fabric:v1_21_11      Java 21
 fabric   26.1.2   :platforms:fabric:v26_1_2       Java 21
 fabric   26.2     :platforms:fabric:v26_2         Java 21
@@ -53,8 +56,10 @@ resolve_target() {
   local version="$2"
 
   case "${platform}:${version}" in
+    fabric:1.20.1)   TARGET_PROJECT=":platforms:fabric:v1_20_1"; TARGET_JAVA=17; TARGET_VERSION="1.20.1" ;;
     fabric:1.20.4)   TARGET_PROJECT=":platforms:fabric:v1_20_4"; TARGET_JAVA=17; TARGET_VERSION="1.20.4" ;;
     fabric:1.21.1)   TARGET_PROJECT=":platforms:fabric:v1_21_1"; TARGET_JAVA=21; TARGET_VERSION="1.21.1" ;;
+    fabric:1.21.10)  TARGET_PROJECT=":platforms:fabric:v1_21_10"; TARGET_JAVA=21; TARGET_VERSION="1.21.10" ;;
     fabric:1.21.11)  TARGET_PROJECT=":platforms:fabric:v1_21_11"; TARGET_JAVA=21; TARGET_VERSION="1.21.11" ;;
     fabric:26.1.2)   TARGET_PROJECT=":platforms:fabric:v26_1_2"; TARGET_JAVA=21; TARGET_VERSION="26.1.2" ;;
     fabric:26.2)     TARGET_PROJECT=":platforms:fabric:v26_2"; TARGET_JAVA=21; TARGET_VERSION="26.2" ;;
