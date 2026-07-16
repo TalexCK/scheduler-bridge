@@ -57,7 +57,16 @@ public final class SchedulerBridgeVelocityPlugin {
   private static final String NETWORK_PERMISSION = "network.admin";
   private static final List<String> NETWORK_SUBCOMMANDS =
       Arrays.asList(
-          "help", "list", "players", "start", "stop", "restart", "log", "command", "transfer");
+          "help",
+          "list",
+          "players",
+          "sync",
+          "start",
+          "stop",
+          "restart",
+          "log",
+          "command",
+          "transfer");
   private final ProxyServer proxyServer;
   private final SchedulerBridge bridge;
   private final Logger logger;
@@ -423,6 +432,14 @@ public final class SchedulerBridgeVelocityPlugin {
     if (client == null) {
       return;
     }
+    try {
+      client.updatePlayers(currentPlayerSnapshot());
+    } catch (Exception error) {
+      logger.warn(error.getMessage());
+    }
+  }
+
+  private List<BridgeHttpClient.PlayerSnapshot> currentPlayerSnapshot() {
     List<BridgeHttpClient.PlayerSnapshot> players = new ArrayList<>();
     for (Player player : proxyServer.getAllPlayers()) {
       String serverId =
@@ -434,11 +451,7 @@ public final class SchedulerBridgeVelocityPlugin {
           new BridgeHttpClient.PlayerSnapshot(
               player.getUniqueId().toString(), player.getUsername(), player.getPing(), serverId));
     }
-    try {
-      client.updatePlayers(players);
-    } catch (Exception error) {
-      logger.warn(error.getMessage());
-    }
+    return players;
   }
 
   private boolean reconcileServers() {
@@ -746,6 +759,25 @@ public final class SchedulerBridgeVelocityPlugin {
                 }
               });
           return;
+        case "sync":
+          runManagement(
+              invocation.source(),
+              () -> {
+                client.updatePlayers(currentPlayerSnapshot());
+                List<String> output = client.syncNetwork();
+                invocation
+                    .source()
+                    .sendMessage(
+                        Component.text(
+                            "Network snapshot published; Bingo leaderboard sync triggered where available.",
+                            NamedTextColor.GREEN));
+                sendLines(
+                    invocation.source(),
+                    output,
+                    "Scheduler returned no synchronization details.",
+                    NamedTextColor.GRAY);
+              });
+          return;
         case "start":
           if (!requireArguments(
               invocation.source(), arguments, 2, "/network start <server-id> [players...]")) {
@@ -925,6 +957,7 @@ public final class SchedulerBridgeVelocityPlugin {
     source.sendMessage(Component.text("Network management commands:", NamedTextColor.GOLD));
     source.sendMessage(Component.text("/network list", NamedTextColor.AQUA));
     source.sendMessage(Component.text("/network players", NamedTextColor.AQUA));
+    source.sendMessage(Component.text("/network sync", NamedTextColor.AQUA));
     source.sendMessage(
         Component.text("/network start ", NamedTextColor.AQUA)
             .append(Component.text("<server-id> [players...]", NamedTextColor.GRAY)));

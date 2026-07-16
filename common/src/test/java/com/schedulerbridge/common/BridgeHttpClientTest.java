@@ -21,6 +21,34 @@ import org.junit.jupiter.api.Test;
 
 class BridgeHttpClientTest {
   @Test
+  void requestsNetworkSynchronization() throws Exception {
+    AtomicReference<String> method = new AtomicReference<>();
+    AtomicReference<String> path = new AtomicReference<>();
+    AtomicReference<String> authorization = new AtomicReference<>();
+    HttpServer server =
+        server(
+            exchange -> {
+              method.set(exchange.getRequestMethod());
+              path.set(exchange.getRequestURI().getRawPath());
+              authorization.set(exchange.getRequestHeaders().getFirst("Authorization"));
+              respond(exchange, "Public database snapshot published.\nBingo: synchronized.\n");
+            });
+
+    try {
+      List<String> output = client(server).syncNetwork();
+      assertEquals(
+          java.util.Arrays.asList(
+              "Public database snapshot published.", "Bingo: synchronized."),
+          output);
+      assertEquals("POST", method.get());
+      assertEquals("/bridge/v1/sync", path.get());
+      assertEquals("Bearer test-token", authorization.get());
+    } finally {
+      server.stop(0);
+    }
+  }
+
+  @Test
   void requestsTheVersionedSoloSessionIndex() throws Exception {
     UUID owner = UUID.fromString("00000000-0000-0000-0000-000000000001");
     AtomicReference<String> path = new AtomicReference<>();

@@ -50,6 +50,8 @@ GET  /bridge/v1/servers/<server-id>/logs?lines=100
 POST /bridge/v1/servers/<server-id>/command
 GET  /bridge/v1/transfers
 POST /bridge/v1/transfers/result
+POST /bridge/v1/leaderboards
+POST /bridge/v1/sync
 ```
 
 POST 请求采用 `application/x-www-form-urlencoded`。服务器列表和传送任务使用 TSV
@@ -138,6 +140,7 @@ Scheduler 定义识别，不受 Solo 门禁影响。
 ```text
 /network list
 /network players
+/network sync
 /network start <server-id> [players...]
 /network stop <instance-id>
 /network restart <instance-id>
@@ -148,6 +151,8 @@ Scheduler 定义识别，不受 Solo 门禁影响。
 
 实例参数显示为 `<server-id>-1`，同时也接受服务器 ID 和 Scheduler 实例 UUID。命令
 通过异步 HTTP 请求执行，不阻塞 Velocity 的命令处理线程；日志最多返回 200 行。
+`/network sync` 会先要求 Scheduler 将服务器定义、实例和玩家完整快照发布到公网
+PostgreSQL，再对所有 READY Bingo 实例执行 `bingo_stats sync`，并逐实例返回触发结果。
 
 ## Paper 插件接口
 

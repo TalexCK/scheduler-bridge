@@ -148,6 +148,10 @@ public final class BridgeHttpClient {
         post("/bridge/v1/servers/" + encodePath(serverId) + "/command", form("command", command)));
   }
 
+  public List<String> syncNetwork() throws IOException {
+    return responseLines(request("POST", "/bridge/v1/sync", "", 90_000));
+  }
+
   public List<ServerInstance> servers() throws IOException {
     String response = request("GET", "/bridge/v1/servers", null);
     if (response.trim().isEmpty()) {
