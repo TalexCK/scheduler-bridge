@@ -11,7 +11,7 @@ import com.velocitypowered.api.command.CommandManager;
 import com.velocitypowered.api.command.CommandMeta;
 import com.velocitypowered.api.command.CommandSource;
 import com.velocitypowered.api.command.SimpleCommand;
-import com.velocitypowered.api.event.PostOrder;
+import com.velocitypowered.api.event.EventHandler;
 import com.velocitypowered.api.event.Subscribe;
 import com.velocitypowered.api.event.connection.DisconnectEvent;
 import com.velocitypowered.api.event.connection.PostLoginEvent;
@@ -70,6 +70,7 @@ public final class SchedulerBridgeVelocityPlugin {
   private CommandMeta hubCommandMeta;
   private CommandMeta networkCommandMeta;
   private GameBridgeReporter reporter;
+  private EventHandler<ServerPreConnectEvent> serverPreConnectHandler;
   private final Set<String> managedServers = ConcurrentHashMap.newKeySet();
   private final Map<String, BridgeHttpClient.TransferRequest> deferredTransfers =
       new ConcurrentHashMap<>();
@@ -103,6 +104,10 @@ public final class SchedulerBridgeVelocityPlugin {
     commandManager.register(hubCommandMeta, new HubCommand());
     networkCommandMeta = commandManager.metaBuilder("network").plugin(this).build();
     commandManager.register(networkCommandMeta, new NetworkCommand());
+    serverPreConnectHandler = this::onServerPreConnect;
+    proxyServer
+        .getEventManager()
+        .register(this, ServerPreConnectEvent.class, Short.MIN_VALUE, serverPreConnectHandler);
     try {
       client = BridgeHttpClient.fromEnvironment();
       pollTask =
@@ -177,6 +182,10 @@ public final class SchedulerBridgeVelocityPlugin {
     if (reporter != null) {
       reporter.close();
     }
+    if (serverPreConnectHandler != null) {
+      proxyServer.getEventManager().unregister(this, serverPreConnectHandler);
+      serverPreConnectHandler = null;
+    }
     deferredTransfers.clear();
     deferredTransferExpiresAt.clear();
     reconciledTransfers.clear();
@@ -209,7 +218,6 @@ public final class SchedulerBridgeVelocityPlugin {
     schedulePlayerSync();
   }
 
-  @Subscribe(order = PostOrder.LAST)
   public void onServerPreConnect(ServerPreConnectEvent event) {
     String originalServer = event.getOriginalServer().getServerInfo().getName();
     String resultServer =
@@ -682,6 +690,14 @@ public final class SchedulerBridgeVelocityPlugin {
   private final class NetworkCommand implements SimpleCommand {
     @Override
     public void execute(Invocation invocation) {
+      if (!hasPermission(invocation)) {
+        invocation
+            .source()
+            .sendMessage(
+                Component.text(
+                    "You need the network.admin permission to use /network.", NamedTextColor.RED));
+        return;
+      }
       String[] arguments = invocation.arguments();
       if (arguments.length == 0 || arguments[0].equalsIgnoreCase("help")) {
         sendNetworkHelp(invocation.source());
@@ -865,6 +881,9 @@ public final class SchedulerBridgeVelocityPlugin {
 
     @Override
     public List<String> suggest(Invocation invocation) {
+      if (!hasPermission(invocation)) {
+        return Collections.emptyList();
+      }
       String[] arguments = invocation.arguments();
       if (arguments.length == 0) {
         return NETWORK_SUBCOMMANDS;
@@ -898,8 +917,7 @@ public final class SchedulerBridgeVelocityPlugin {
 
     @Override
     public boolean hasPermission(Invocation invocation) {
-      return !(invocation.source() instanceof Player)
-          || invocation.source().hasPermission(NETWORK_PERMISSION);
+      return invocation.source().hasPermission(NETWORK_PERMISSION);
     }
   }
 
